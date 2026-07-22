@@ -133,6 +133,11 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div id="poolPagination" class="pagination">
+        <button id="poolPrevPage" title="上一页">◀ 上一页</button>
+        <span id="poolPageInfo">第 1 页 / 共 1 页（0 条）</span>
+        <button id="poolNextPage" title="下一页">下一页 ▶</button>
+      </div>
     </div>
 
     <div class="tab-content hidden" id="tab-registered">
@@ -402,10 +407,26 @@
   <div class="modal-body">
     <div class="modal-head">
       <h3 id="credTitle">凭证</h3>
+      <button id="credExportAuth" class="hidden">📥 导出 auth.json</button>
       <button id="credCopyJson">📋 复制全部 JSON</button>
       <button id="credClose">✕</button>
     </div>
     <div id="credFields" class="cred-fields"></div>
+  </div>
+</div>
+
+<!-- QQ 群弹窗 -->
+<div class="modal hidden" id="qqModal">
+  <div class="modal-body" style="max-width:420px; text-align:center;">
+    <div class="modal-head" style="justify-content:center;">
+      <h3 style="text-align:center;">加入交流群</h3>
+    </div>
+    <div style="padding:24px 20px;">
+      <p style="font-size:15px; color:#333; margin:0 0 12px;">感谢使用本工具！加入 QQ 群获取最新版本更新、使用教程和技术支持~</p>
+      <div style="font-size:28px; font-weight:bold; color:var(--pink-dark); margin:16px 0; letter-spacing:2px;">259844673</div>
+      <p style="font-size:13px; color:#888; margin:0 0 20px;">遇到问题群里问，更新公告群里发 ✨</p>
+      <button id="qqModalClose" style="padding:8px 32px; font-size:14px; cursor:pointer; border-radius:8px; border:1px solid var(--border); background:var(--pink-light); color:var(--pink-dark);">我知道了</button>
+    </div>
   </div>
 </div>
 

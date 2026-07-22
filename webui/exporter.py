@@ -489,6 +489,63 @@ def build_sub2api_payload(cred: dict, group_ids: list[int]) -> dict:
 # ──────────────────────── SUB2API：上传 ────────────────────────
 
 
+def _has_agent_identity(cred: dict) -> bool:
+    extra = cred.get("extra") or {}
+    rid = cred.get("agent_runtime_id") or extra.get("agent_runtime_id") or ""
+    key = cred.get("agent_private_key") or extra.get("agent_private_key") or ""
+    return bool(rid and key)
+
+
+def _build_sub2api_agent_identity_payload(cred: dict, group_ids: list[int]) -> tuple[dict, str]:
+    """构建 SUB2API import-codex-session 的 Agent Identity payload。
+
+    返回 (payload_dict, email)。content 字段是 Codex CLI auth.json 格式的 JSON 字符串。
+    """
+    extra = cred.get("extra") or {}
+    agent_runtime_id = cred.get("agent_runtime_id") or extra.get("agent_runtime_id") or ""
+    agent_private_key = cred.get("agent_private_key") or extra.get("agent_private_key") or ""
+    access_token = str(cred.get("access_token") or "").strip()
+    email = str(cred.get("email") or "").strip()
+
+    account_id = ""
+    user_id = ""
+    plan_type = "free"
+    if access_token:
+        try:
+            payload = _decode_jwt_payload(access_token)
+            auth_info = _get_auth(payload)
+            account_id = str(auth_info.get("chatgpt_account_id") or "").strip()
+            user_id = str(auth_info.get("chatgpt_user_id") or "").strip()
+            plan_type = str(auth_info.get("chatgpt_plan_type") or "free").strip()
+            if not email:
+                profile = payload.get("https://api.openai.com/profile", {})
+                email = str(profile.get("email") or "").strip()
+        except Exception:
+            pass
+
+    auth_json = {
+        "auth_mode": "agent_identity",
+        "agent_identity": {
+            "agent_runtime_id": agent_runtime_id,
+            "agent_private_key": agent_private_key,
+            "account_id": account_id,
+            "chatgpt_user_id": user_id,
+            "email": email,
+            "plan_type": plan_type,
+            "chatgpt_account_is_fedramp": False,
+        },
+    }
+
+    payload = {
+        "content": json.dumps(auth_json, ensure_ascii=False),
+        "name": email or "codex-agent",
+        "update_existing": True,
+    }
+    if group_ids:
+        payload["group_ids"] = list(group_ids)
+    return payload, email
+
+
 def export_to_sub2api(cred: dict, cfg: dict, *,
                         log_fn: Optional[Callable[[str, str], None]] = None) -> dict:
     """SUB2API x-api-key 直连上传（无登录流程）。"""
@@ -505,9 +562,15 @@ def export_to_sub2api(cred: dict, cfg: dict, *,
     timeout = int(cfg.get("sub2api_timeout") or DEFAULT_TIMEOUT)
     cffi = _import_cffi()
 
-    payload = build_sub2api_payload(cred, group_ids)
-    email = payload.get("name") or "unknown"
-    url = f"{api_url}/api/v1/admin/accounts"
+    use_agent_identity = _has_agent_identity(cred)
+    if use_agent_identity:
+        payload, email = _build_sub2api_agent_identity_payload(cred, group_ids)
+        url = f"{api_url}/api/v1/admin/accounts/import/codex-session"
+        log(f"[SUB2API] 使用 Agent Identity 模式导入 {email}", "info")
+    else:
+        payload = build_sub2api_payload(cred, group_ids)
+        email = payload.get("name") or "unknown"
+        url = f"{api_url}/api/v1/admin/accounts"
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/plain, */*",
@@ -537,12 +600,18 @@ def export_to_sub2api(cred: dict, cfg: dict, *,
                 try:
                     data = resp.json()
                     if isinstance(data, dict):
-                        new_id = str(data.get("id") or data.get("ID") or "").strip()
+                        if use_agent_identity:
+                            created = data.get("created", 0)
+                            updated = data.get("updated", 0)
+                            new_id = f"created={created},updated={updated}"
+                        else:
+                            new_id = str(data.get("id") or data.get("ID") or "").strip()
                 except Exception:
                     pass
-                log(f"[SUB2API] ✅ 上传成功 {email} (id={new_id or 'unknown'})", "ok")
+                mode = "Agent Identity" if use_agent_identity else "OAuth"
+                log(f"[SUB2API] ✅ 上传成功 {email} ({mode}, {new_id or 'unknown'})", "ok")
                 return {"ok": True, "email": email, "account_id": new_id,
-                        "message": f"SUB2API 上传成功 #{new_id or 'unknown'}"}
+                        "message": f"SUB2API {mode} 上传成功 {new_id or ''}"}
             msg = f"HTTP {resp.status_code}"
             try:
                 detail = resp.json()
@@ -673,31 +742,37 @@ def run_exports(cred: dict, *,
     if not (cpa_on or sub2_on):
         return out
 
-    # ─ 关键：先用 refresh_token 换 Codex 风格 access_token ─
-    try:
-        log("[exporter] 用 refresh_token 换新的 Codex access_token...", "info")
-        fresh = refresh_codex_token(cred.get("refresh_token", ""))
-        cred = {
-            **cred,
-            "access_token":  fresh["access_token"],
-            "refresh_token": fresh.get("refresh_token") or cred.get("refresh_token"),
-            "id_token":      fresh.get("id_token") or cred.get("id_token", ""),
-        }
-        log(
-            f"[exporter] ✅ Codex token 刷新成功 "
-            f"(access_token len={len(fresh['access_token'])} "
-            f"id_token len={len(fresh.get('id_token') or '')})",
-            "ok",
-        )
-    except Exception as e:
-        log(f"[exporter] ❌ Codex token 刷新失败，无法导出: {e}", "error")
-        if cpa_on:
-            out["any_attempted"] = True
-            out["cpa"] = {"ok": False, "error": f"Codex token 刷新失败: {e}"}
-        if sub2_on:
-            out["any_attempted"] = True
-            out["sub2api"] = {"ok": False, "error": f"Codex token 刷新失败: {e}"}
-        return out
+    use_agent_identity = _has_agent_identity(cred)
+
+    # Agent Identity 模式不需要 refresh_token，直接走 import-codex-session
+    if not use_agent_identity:
+        # ─ 旧模式：先用 refresh_token 换 Codex 风格 access_token ─
+        try:
+            log("[exporter] 用 refresh_token 换新的 Codex access_token...", "info")
+            fresh = refresh_codex_token(cred.get("refresh_token", ""))
+            cred = {
+                **cred,
+                "access_token":  fresh["access_token"],
+                "refresh_token": fresh.get("refresh_token") or cred.get("refresh_token"),
+                "id_token":      fresh.get("id_token") or cred.get("id_token", ""),
+            }
+            log(
+                f"[exporter] ✅ Codex token 刷新成功 "
+                f"(access_token len={len(fresh['access_token'])} "
+                f"id_token len={len(fresh.get('id_token') or '')})",
+                "ok",
+            )
+        except Exception as e:
+            log(f"[exporter] ❌ Codex token 刷新失败，无法导出: {e}", "error")
+            if cpa_on:
+                out["any_attempted"] = True
+                out["cpa"] = {"ok": False, "error": f"Codex token 刷新失败: {e}"}
+            if sub2_on:
+                out["any_attempted"] = True
+                out["sub2api"] = {"ok": False, "error": f"Codex token 刷新失败: {e}"}
+            return out
+    else:
+        log("[exporter] 检测到 Agent Identity 凭证，跳过 refresh_token 刷新", "info")
 
     if cpa_on:
         out["any_attempted"] = True

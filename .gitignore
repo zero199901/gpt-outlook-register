@@ -68,3 +68,9 @@ config.local.json
 .env
 .env.local
 secrets.json
+
+# ──────────────── 本地接码 / SUB2API 测试产物（含账号凭证，禁止提交）────────────────
+email_api_result_*.json
+sub2api_import_codex_session_*.json
+sub2api_oauth_payload_*.json
+manual_otp_result_*.json

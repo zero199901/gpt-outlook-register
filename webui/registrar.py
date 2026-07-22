@@ -202,10 +202,12 @@ def _do_register(
             need_session = options.get("want_session_token", True)
             need_refresh = options.get("want_refresh_token", True)
             # 用户勾选的凭证全拿到 → 算正常完成（不视为 partial）
+            # agent_runtime_id 可替代 refresh_token（Agent Identity 模式）
+            has_rt_or_agent = bool(d.get("refresh_token") or d.get("agent_runtime_id"))
             wanted_ok = (
                 (not need_access or d.get("access_token"))
                 and (not need_session or d.get("session_token"))
-                and (not need_refresh or d.get("refresh_token"))
+                and (not need_refresh or has_rt_or_agent)
             )
             has_any = bool(
                 d.get("access_token") or d.get("refresh_token") or d.get("session_token")
@@ -236,6 +238,9 @@ def _do_register(
         if options.get("want_refresh_token", True):
             d["refresh_token"] = full.get("refresh_token", "")
             d["id_token"] = full.get("id_token", "")
+        if full.get("agent_runtime_id"):
+            d["agent_runtime_id"] = full["agent_runtime_id"]
+            d["agent_private_key"] = full.get("agent_private_key", "")
 
         # 落库
         db.save_registered(d)

@@ -42,6 +42,7 @@ logging.basicConfig(
 logger = logging.getLogger("webui")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+BOOT_ID = str(int(time.time() * 1000))
 
 app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
 
@@ -78,8 +79,10 @@ def api_import(req: ImportReq):
 
 
 @app.get("/api/accounts")
-def api_accounts(status: str = "", limit: int = 500):
-    return {"ok": True, "items": db.list_accounts(status=status, limit=limit)}
+def api_accounts(status: str = "", limit: int = 50, offset: int = 0):
+    items = db.list_accounts(status=status, limit=limit, offset=offset)
+    total = db.count_accounts(status=status)
+    return {"ok": True, "items": items, "total": total}
 
 
 @app.delete("/api/accounts/{email}")
@@ -143,7 +146,7 @@ def api_release_stale(stale_seconds: int = 1800):
 
 @app.get("/api/stats")
 def api_stats():
-    return {"ok": True, "stats": db.stats()}
+    return {"ok": True, "stats": db.stats(), "boot_id": BOOT_ID}
 
 
 @app.post("/api/register")
@@ -245,6 +248,46 @@ def api_registered_one(email: str):
     if not row:
         raise HTTPException(404, "not found")
     return {"ok": True, "data": row}
+
+
+@app.get("/api/registered/{email}/auth_json")
+def api_registered_auth_json(email: str):
+    """导出 Codex CLI auth.json（需要 Agent Identity 凭证）。"""
+    row = db.get_registered(email)
+    if not row:
+        raise HTTPException(404, "not found")
+    extra = row.get("extra") or {}
+    agent_runtime_id = extra.get("agent_runtime_id", "")
+    agent_private_key = extra.get("agent_private_key", "")
+    if not agent_runtime_id or not agent_private_key:
+        raise HTTPException(400, "该账号没有 Agent Identity 凭证（无 agent_runtime_id）")
+    access_token = row.get("access_token", "")
+    account_id = ""
+    user_id = ""
+    plan_type = "free"
+    account_email = row.get("email", email)
+    if access_token:
+        try:
+            from codex_agent import extract_account_info
+            info = extract_account_info(access_token)
+            account_id = info.get("account_id", "")
+            user_id = info.get("user_id", "")
+            account_email = info.get("email", "") or account_email
+            plan_type = info.get("plan_type", "free")
+        except Exception:
+            pass
+    from codex_agent import build_auth_json
+    auth_json = build_auth_json(
+        agent_runtime_id=agent_runtime_id,
+        private_key_b64=agent_private_key,
+        account_id=account_id,
+        user_id=user_id,
+        email=account_email,
+        plan_type=plan_type,
+    )
+    return JSONResponse(content=auth_json, headers={
+        "Content-Disposition": f'attachment; filename="auth.json"',
+    })
 
 
 @app.delete("/api/registered/{email}")

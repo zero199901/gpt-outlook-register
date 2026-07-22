@@ -202,9 +202,26 @@ $$(".tab").forEach((t) => {
 
 // ──────────────────────── 号池列表 ────────────────────────
 
-async function refreshPool() {
+const POOL_PAGE_SIZE = 50;
+let _poolPage = 1;
+let _poolTotal = 0;
+
+function _poolTotalPages() { return Math.max(1, Math.ceil(_poolTotal / POOL_PAGE_SIZE)); }
+
+function _updatePoolPagination() {
+  const pages = _poolTotalPages();
+  $("#poolPageInfo").textContent = `第 ${_poolPage} 页 / 共 ${pages} 页（${_poolTotal} 条）`;
+  $("#poolPrevPage").disabled = _poolPage <= 1;
+  $("#poolNextPage").disabled = _poolPage >= pages;
+}
+
+async function refreshPool(resetPage) {
+  if (resetPage === true) _poolPage = 1;
   const status = $("#poolFilter").value;
-  const { items } = await api(`/api/accounts?status=${encodeURIComponent(status)}`);
+  const offset = (_poolPage - 1) * POOL_PAGE_SIZE;
+  const { items, total } = await api(`/api/accounts?status=${encodeURIComponent(status)}&limit=${POOL_PAGE_SIZE}&offset=${offset}`);
+  _poolTotal = total;
+  if (_poolPage > _poolTotalPages()) _poolPage = _poolTotalPages();
   const tb = $("#poolTable tbody");
   tb.innerHTML = "";
   for (const r of items) {
@@ -225,9 +242,12 @@ async function refreshPool() {
   }
   $("#poolSelectAll").checked = false;
   _updateSelCount();
+  _updatePoolPagination();
 }
-$("#btnRefreshPool").addEventListener("click", refreshPool);
-$("#poolFilter").addEventListener("change", refreshPool);
+$("#btnRefreshPool").addEventListener("click", () => refreshPool(false));
+$("#poolFilter").addEventListener("change", () => refreshPool(true));
+$("#poolPrevPage").addEventListener("click", () => { if (_poolPage > 1) { _poolPage--; refreshPool(); } });
+$("#poolNextPage").addEventListener("click", () => { if (_poolPage < _poolTotalPages()) { _poolPage++; refreshPool(); } });
 
 $("#btnResetFailed").addEventListener("click", async () => {
   if (!confirm("把所有 failed 号重置为 available？")) return;
@@ -602,6 +622,14 @@ function _renderCredModal(email, cred) {
     box.appendChild(row);
   }
 
+  const exportBtn = $("#credExportAuth");
+  if (cred.extra && cred.extra.agent_runtime_id) {
+    exportBtn.classList.remove("hidden");
+    exportBtn.dataset.email = email;
+  } else {
+    exportBtn.classList.add("hidden");
+  }
+
   $("#credModal").classList.remove("hidden");
 }
 
@@ -628,6 +656,23 @@ $("#credClose").addEventListener("click", () => {
 $("#credCopyJson").addEventListener("click", async (e) => {
   if (!_credCache) return;
   await _copyText(JSON.stringify(_credCache, null, 2), e.currentTarget);
+});
+
+$("#credExportAuth").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  const email = btn.dataset.email;
+  if (!email) return;
+  try {
+    const resp = await fetch(`/api/registered/${encodeURIComponent(email)}/auth_json`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    await _copyText(JSON.stringify(data, null, 2), btn);
+  } catch (err) {
+    alert("导出失败: " + err.message);
+  }
 });
 
 // ──────────────────────── 运行记录 ────────────────────────
@@ -1145,6 +1190,22 @@ $("#btnTestSub2api").addEventListener("click", (e) => {
   _testExportTarget("sub2api", e.currentTarget, $("#sub2apiTestResult"), "🔌 测试 SUB2API 连通性");
 });
 
+// ──────────────────────── QQ 群弹窗 ────────────────────────
+
+async function _checkQQModal() {
+  try {
+    const { boot_id } = await api("/api/stats");
+    const dismissed = localStorage.getItem("qq_dismissed_boot");
+    if (dismissed !== boot_id) {
+      $("#qqModal").classList.remove("hidden");
+    }
+    $("#qqModalClose").addEventListener("click", () => {
+      $("#qqModal").classList.add("hidden");
+      localStorage.setItem("qq_dismissed_boot", boot_id);
+    });
+  } catch (_) {}
+}
+
 // ──────────────────────── 启动 ────────────────────────
 
 _loadForm();
@@ -1152,4 +1213,5 @@ _bindAutoSave();
 refreshStats();
 refreshPool();
 _connectAutoStream();
+_checkQQModal();
 setInterval(refreshStats, 5000);

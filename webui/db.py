@@ -140,19 +140,28 @@ def import_accounts(text: str) -> dict:
     return {"parsed": len(rows), "inserted": inserted, "updated": updated, "skipped": skipped}
 
 
-def list_accounts(status: str = "", limit: int = 500) -> list[dict]:
+def list_accounts(status: str = "", limit: int = 50, offset: int = 0) -> list[dict]:
     con = _conn()
     if status:
         cur = con.execute(
-            "SELECT * FROM outlook_accounts WHERE status=? ORDER BY imported_at DESC LIMIT ?",
-            (status, limit),
+            "SELECT * FROM outlook_accounts WHERE status=? ORDER BY imported_at DESC LIMIT ? OFFSET ?",
+            (status, limit, offset),
         )
     else:
         cur = con.execute(
-            "SELECT * FROM outlook_accounts ORDER BY imported_at DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM outlook_accounts ORDER BY imported_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
     return [dict(r) for r in cur.fetchall()]
+
+
+def count_accounts(status: str = "") -> int:
+    con = _conn()
+    if status:
+        cur = con.execute("SELECT COUNT(*) FROM outlook_accounts WHERE status=?", (status,))
+    else:
+        cur = con.execute("SELECT COUNT(*) FROM outlook_accounts")
+    return cur.fetchone()[0]
 
 
 def get_account(email: str) -> Optional[dict]:
