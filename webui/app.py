@@ -25,7 +25,6 @@ sys.path.insert(0, str(ROOT))
 
 from . import db, registrar  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
-from .proxy_subscription import load_proxy_subscription  # noqa: E402
 
 # 启动时自动释放卡死的 in_use 号（上次进程崩溃 / 强退留下的）
 try:
@@ -584,18 +583,6 @@ def api_manual_export_to_panel(req: ManualExportReq):
 # ──────────────────────── auto-loop ────────────────────────
 
 
-class ProxySubscriptionPreviewReq(BaseModel):
-    url: str = Field(..., description="代理订阅地址")
-    timeout: int = 15
-
-
-@app.post("/api/proxy/subscription/preview")
-def api_proxy_subscription_preview(req: ProxySubscriptionPreviewReq):
-    result = load_proxy_subscription(req.url, timeout=req.timeout)
-    if not result.ok and not result.proxies:
-        raise HTTPException(400, result.error or "订阅拉取失败")
-    return result.to_dict(include_proxies=True)
-
 
 class AutoLoopStartReq(BaseModel):
     """跟 RegisterReq 复用同样的字段，auto-loop 内部传给每个 run。"""
@@ -604,9 +591,6 @@ class AutoLoopStartReq(BaseModel):
     want_refresh_token: bool = True
     proxy: str = ""              # 单代理（concurrency=1 + 无代理池时用）
     proxy_pool: str = ""         # 多代理池（每行一个）；优先于 proxy
-    proxy_subscription_url: str = ""
-    proxy_subscription_refresh_seconds: int = 0
-    proxy_subscription_limit: int = 0  # 0=取全部；>0=只取订阅前 N 个直连代理
     max_runs: int = 0                 # 0=不限；>0=本次最多启动 N 个注册 run
     concurrency: int = 1         # 并发 worker 数（1-20）
     otp_timeout: int = 180
