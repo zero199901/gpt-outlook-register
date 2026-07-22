@@ -74,3 +74,5 @@ email_api_result_*.json
 sub2api_import_codex_session_*.json
 sub2api_oauth_payload_*.json
 manual_otp_result_*.json
+
+sub2api-account-*.json

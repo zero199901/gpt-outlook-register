@@ -708,6 +708,8 @@ function _autoOptions() {
   return {
     proxy: $("#regProxy").value.trim(),
     proxy_pool: $("#autoProxyPool").value,
+    proxy_subscription_url: $("#autoProxySubscriptionUrl")?.value.trim() || "",
+    proxy_subscription_refresh_seconds: parseInt($("#autoProxySubRefresh")?.value || "0", 10) || 0,
     concurrency: parseInt($("#autoConcurrency").value || "1", 10),
     otp_timeout: parseInt($("#regOtpTimeout").value || "180", 10),
     want_access_token: true,
@@ -731,6 +733,40 @@ AUTO_BTNS.pause.addEventListener("click", () => autoCall("/api/auto/pause"));
 AUTO_BTNS.resume.addEventListener("click", () => autoCall("/api/auto/resume"));
 AUTO_BTNS.stop.addEventListener("click", () => autoCall("/api/auto/stop"));
 
+async function loadProxySubscriptionPreview() {
+  const url = $("#autoProxySubscriptionUrl")?.value.trim() || "";
+  const out = $("#proxySubResult");
+  if (!url) {
+    out.textContent = "请输入订阅地址";
+    out.className = "result bad";
+    return;
+  }
+  const btn = $("#btnLoadProxySub");
+  btn.disabled = true;
+  out.textContent = "拉取中...";
+  out.className = "result";
+  try {
+    const r = await api("/api/proxy/subscription/preview", {
+      method: "POST",
+      body: JSON.stringify({ url, timeout: 20 }),
+    });
+    const proxies = Array.isArray(r.proxies) ? r.proxies : [];
+    if (proxies.length) {
+      $("#autoProxyPool").value = proxies.join("\n");
+      _saveForm();
+    }
+    const warn = (r.warnings || []).length ? `；${(r.warnings || []).join("；")}` : "";
+    out.textContent = `订阅 ${r.count || 0} 个 HTTP/SOCKS 代理，跳过 ${r.unsupported_count || 0} 个其它节点${warn}`;
+    out.className = proxies.length ? "result ok" : "result warn";
+  } catch (e) {
+    out.textContent = "订阅拉取失败: " + e.message;
+    out.className = "result bad";
+  } finally {
+    btn.disabled = false;
+  }
+}
+$("#btnLoadProxySub")?.addEventListener("click", loadProxySubscriptionPreview);
+
 function _renderAutoStatus(s) {
   const stateLabel = {
     "stopped": "⚪ 未运行",
@@ -746,14 +782,19 @@ function _renderAutoStatus(s) {
         return `<div class="auto-worker">worker-${w.id} ▶ <code>${escapeHtml(w.email)}</code> ${dur}${px}</div>`;
       }).join("")
     : "";
-  const meta = `并发=${s.concurrency || 1}` + (s.proxy_pool_size ? ` 代理池=${s.proxy_pool_size}` : "");
+  const metaParts = [`并发=${s.concurrency || 1}`];
+  if (s.proxy_pool_size) metaParts.push(`代理池=${s.proxy_pool_size}`);
+  if (s.proxy_subscription_count) metaParts.push(`订阅=${s.proxy_subscription_count}`);
+  if (s.proxy_subscription_refresh_seconds) metaParts.push(`订阅刷新=${s.proxy_subscription_refresh_seconds}s`);
+  const meta = metaParts.join(" ");
+  const subStatus = s.proxy_subscription_status ? `<br><span class="auto-msg">${escapeHtml(s.proxy_subscription_status)}</span>` : "";
   $("#autoStatus").innerHTML = `
     <b>${stateLabel}</b>
     &nbsp;|&nbsp; 已完成: <b class="ok">${s.registered_ok}</b> 成功 / <b class="bad">${s.registered_fail}</b> 失败
     &nbsp;|&nbsp; 运行: ${elapsed}
     &nbsp;|&nbsp; <span class="auto-meta">${meta}</span>
     ${workerRows ? "<br>" + workerRows : ""}
-    <br><span class="auto-msg">${escapeHtml(s.last_message || "")}</span>
+    <br><span class="auto-msg">${escapeHtml(s.last_message || "")}</span>${subStatus}
   `;
   // 按钮可用性
   const st = s.state;
@@ -822,6 +863,8 @@ const PERSIST_FIELDS = {
   autoCoolDown:    "text",
   autoConcurrency: "text",
   autoProxyPool:   "text",
+  autoProxySubscriptionUrl: "text",
+  autoProxySubRefresh: "text",
 };
 
 function _saveForm() {

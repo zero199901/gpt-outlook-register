@@ -80,6 +80,18 @@
         </label>
       </div>
       <div class="row">
+        <label class="check inline-check" style="width:100%" title="代理订阅：启动自动跑号时先拉取；刷新间隔 > 0 时每轮按间隔动态更新代理池">
+          <span style="white-space:nowrap">订阅地址:</span>
+          <input id="autoProxySubscriptionUrl" placeholder="https://example.com/link/TOKEN?clash=3&extend=1" style="flex:1;font-family:monospace;font-size:12px;margin-left:4px">
+          <button id="btnLoadProxySub" type="button" title="先拉取订阅并写入上方代理池">拉取订阅</button>
+          <span style="white-space:nowrap;margin-left:8px">刷新:</span>
+          <input id="autoProxySubRefresh" type="number" value="0" min="0" max="86400" style="width:70px;display:inline-block;margin-left:4px"> 秒
+        </label>
+      </div>
+      <div class="row">
+        <span id="proxySubResult" class="result"></span>
+      </div>
+      <div class="row">
         <span id="autoStatus" class="auto-status">⚪ 未运行</span>
       </div>
     </div>

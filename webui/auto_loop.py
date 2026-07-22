@@ -18,6 +18,7 @@ import time
 from typing import Optional
 
 from . import db, registrar
+from .proxy_subscription import dedupe_preserve_order, load_proxy_subscription, mask_url
 
 logger = logging.getLogger("auto_loop")
 
@@ -72,7 +73,15 @@ class AutoLoopController:
         self._subscribers: list[queue.Queue] = []
         # 代理池 / 并发数
         self._proxy_pool: list[str] = []
+        self._proxy_pool_manual: list[str] = []
+        self._proxy_pool_subscription: list[str] = []
         self._concurrency: int = 1
+        self._proxy_subscription_url: str = ""
+        self._proxy_subscription_refresh_seconds: int = 0
+        self._last_proxy_subscription_fetch: float = 0.0
+        self._proxy_subscription_status: str = ""
+        self._proxy_subscription_source: str = ""
+        self._proxy_subscription_fetch_lock = threading.Lock()
 
     # ──────────────────────── 公共 API ────────────────────────
 
@@ -94,7 +103,20 @@ class AutoLoopController:
             # 解析并发参数
             self._concurrency = max(1, min(20, int(self._options.get("concurrency") or 1)))
             pool_text = self._options.get("proxy_pool") or ""
-            self._proxy_pool = _parse_proxy_pool(pool_text)
+            self._proxy_pool_manual = _parse_proxy_pool(pool_text)
+            self._proxy_pool_subscription = []
+            self._proxy_pool = list(self._proxy_pool_manual)
+            self._proxy_subscription_url = (self._options.get("proxy_subscription_url") or "").strip()
+            self._proxy_subscription_refresh_seconds = max(0, int(self._options.get("proxy_subscription_refresh_seconds") or 0))
+            self._last_proxy_subscription_fetch = 0.0
+            self._proxy_subscription_source = mask_url(self._proxy_subscription_url)
+            self._proxy_subscription_status = ""
+
+        # 启动前先拉一次订阅，让 worker 第一轮就能用到。
+        if self._proxy_subscription_url:
+            self._refresh_proxy_subscription(force=True)
+
+        with self._lock:
             # 启 manage 线程
             self._manage_thread = threading.Thread(
                 target=self._manage_loop, daemon=True, name="auto-loop-manage"
@@ -106,6 +128,7 @@ class AutoLoopController:
             "state": self._state,
             "concurrency": self._concurrency,
             "proxy_pool_size": len(self._proxy_pool),
+            "proxy_subscription_count": len(self._proxy_pool_subscription),
         }
 
     def pause(self) -> dict:
@@ -179,6 +202,12 @@ class AutoLoopController:
                 "registered_fail": self._registered_fail,
                 "concurrency": self._concurrency,
                 "proxy_pool_size": len(self._proxy_pool),
+                "proxy_pool_manual_size": len(self._proxy_pool_manual),
+                "proxy_subscription_count": len(self._proxy_pool_subscription),
+                "proxy_subscription_url": self._proxy_subscription_source,
+                "proxy_subscription_refresh_seconds": self._proxy_subscription_refresh_seconds,
+                "proxy_subscription_last_fetch": self._last_proxy_subscription_fetch,
+                "proxy_subscription_status": self._proxy_subscription_status,
                 "workers": workers_info,
                 "last_message": self._last_message,
                 "pool_stats": stats,
@@ -198,11 +227,72 @@ class AutoLoopController:
             self._last_message = msg
         self._broadcast("state", self._snapshot())
 
+    def _refresh_proxy_subscription(self, force: bool = False):
+        """按需刷新订阅；成功后把订阅代理 + 手填代理合并成当前代理池。"""
+        with self._lock:
+            url = self._proxy_subscription_url
+            refresh_seconds = self._proxy_subscription_refresh_seconds
+            last_fetch = self._last_proxy_subscription_fetch
+        if not url:
+            return
+        now = time.time()
+        if not force and refresh_seconds <= 0:
+            return
+        if not force and last_fetch and (now - last_fetch) < refresh_seconds:
+            return
+
+        acquired = self._proxy_subscription_fetch_lock.acquire(blocking=force)
+        if not acquired:
+            return
+        try:
+            with self._lock:
+                # 多 worker 同时进来时，抢到锁的 worker 再检查一次间隔。
+                last_fetch = self._last_proxy_subscription_fetch
+                refresh_seconds = self._proxy_subscription_refresh_seconds
+            now = time.time()
+            if not force and refresh_seconds > 0 and last_fetch and (now - last_fetch) < refresh_seconds:
+                return
+
+            result = load_proxy_subscription(url)
+            msg_tail = ""
+            if result.warnings:
+                msg_tail = "；" + "；".join(result.warnings[:2])
+            with self._lock:
+                self._last_proxy_subscription_fetch = time.time()
+                if result.proxies:
+                    self._proxy_pool_subscription = result.proxies
+                    self._proxy_pool = dedupe_preserve_order(
+                        self._proxy_pool_subscription + self._proxy_pool_manual
+                    )
+                    self._proxy_subscription_status = (
+                        f"订阅代理 {len(result.proxies)} 个，总代理池 {len(self._proxy_pool)} 个{msg_tail}"
+                    )
+                else:
+                    extra = result.error or "订阅内暂无 HTTP/SOCKS 直连代理"
+                    self._proxy_subscription_status = f"订阅刷新完成：{extra}{msg_tail}"
+                    self._proxy_pool = dedupe_preserve_order(
+                        self._proxy_pool_subscription + self._proxy_pool_manual
+                    )
+                self._last_message = self._proxy_subscription_status
+            self._broadcast("state", self._snapshot())
+        except Exception as e:
+            with self._lock:
+                self._last_proxy_subscription_fetch = time.time()
+                self._proxy_subscription_status = f"订阅刷新异常：{e}"
+                self._last_message = self._proxy_subscription_status
+            self._broadcast("state", self._snapshot())
+        finally:
+            self._proxy_subscription_fetch_lock.release()
+
     def _proxy_for_worker(self, worker_id: int) -> str:
         """按 worker_id 从代理池里挑一个代理。空池时回退到 options.proxy。"""
-        if self._proxy_pool:
-            return self._proxy_pool[worker_id % len(self._proxy_pool)]
-        return self._options.get("proxy", "") or ""
+        self._refresh_proxy_subscription(force=False)
+        with self._lock:
+            pool = list(self._proxy_pool)
+            fallback = self._options.get("proxy", "") or ""
+        if pool:
+            return pool[worker_id % len(pool)]
+        return fallback
 
     def _record_finish(self, ok: bool, category: str):
         """worker 结束一个 run 后调，更新计数 + 熔断。"""
@@ -268,8 +358,7 @@ class AutoLoopController:
     def _worker_loop(self, worker_id: int):
         """单 worker 循环：claim → 跑 → 等结束 → 继续。"""
         idle_round = 0
-        proxy = self._proxy_for_worker(worker_id)
-        logger.info(f"[worker-{worker_id}] 启动 (proxy={proxy or '直连'})")
+        logger.info(f"[worker-{worker_id}] 启动")
 
         while True:
             # 检查停止
@@ -311,7 +400,9 @@ class AutoLoopController:
                 continue
             idle_round = 0
 
-            # 给这个 run 注入 worker 自己的代理
+            # 给这个 run 注入 worker 自己的代理；每轮重新取，便于订阅刷新后动态切换。
+            proxy = self._proxy_for_worker(worker_id)
+            logger.info(f"[worker-{worker_id}] 本轮代理: {proxy or '直连'}")
             run_options = dict(self._options)
             if proxy:
                 run_options["proxy"] = proxy
