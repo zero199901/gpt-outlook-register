@@ -132,6 +132,11 @@ def main():
     ap.add_argument('--otp-timeout', type=int, default=int(os.getenv('OTP_TIMEOUT', '240')))
     ap.add_argument('--out', default='')
     ap.add_argument('--insecure', action='store_true')
+    ap.add_argument('--sub2api-url', default=os.getenv('SUB2API_URL', ''))
+    ap.add_argument('--sub2api-key', default=os.getenv('SUB2API_KEY', ''))
+    ap.add_argument('--sub2api-group-ids', default=os.getenv('SUB2API_GROUP_IDS', '2'))
+    ap.add_argument('--sub2api-timeout', type=int, default=int(os.getenv('SUB2API_TIMEOUT', '30')))
+    ap.add_argument('--no-sub2api-upload', action='store_true')
     args = ap.parse_args()
 
     if not args.api_key:
@@ -155,7 +160,32 @@ def main():
     out = Path(args.out or f"email_api_result_{(provider.email or 'unknown').split('@', 1)[0]}.json")
     out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
     print('\n✅ 测试完成，结果已保存:', out.resolve(), flush=True)
+
+    if args.sub2api_url and args.sub2api_key and not args.no_sub2api_upload:
+        from webui import exporter
+
+        sub2api_cfg = {
+            'enabled': True,
+            'sub2api_url': args.sub2api_url,
+            'sub2api_api_key': args.sub2api_key,
+            'sub2api_group_ids': args.sub2api_group_ids,
+            'sub2api_timeout': str(args.sub2api_timeout),
+        }
+
+        def _upload_log(msg: str, level: str = 'info') -> None:
+            logging.getLogger('sub2api_upload').info('%s', msg)
+
+        upload_result = exporter.run_exports(data, sub2api_cfg=sub2api_cfg, log_fn=_upload_log).get('sub2api')
+        data['_sub2api_upload'] = upload_result
+        out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        if upload_result and upload_result.get('ok'):
+            print('✅ SUB2API 上传成功:', upload_result.get('message') or upload_result, flush=True)
+        else:
+            print('⚠️ SUB2API 上传结果:', upload_result, flush=True)
+
     redacted = {k: ('***' if k.endswith('token') or k in ('cookie_header', 'agent_private_key') else v) for k, v in data.items()}
+    if isinstance(redacted.get('_sub2api_upload'), dict):
+        redacted['_sub2api_upload'] = dict(redacted['_sub2api_upload'])
     print(json.dumps(redacted, ensure_ascii=False, indent=2), flush=True)
 
 
