@@ -480,8 +480,9 @@ def build_sub2api_payload(cred: dict, group_ids: list[int]) -> dict:
         },
         "extra": {"email": email},
         "group_ids": list(group_ids) if group_ids else list(DEFAULT_SUB2API_GROUP_IDS),
-        "concurrency": 10,
+        "concurrency": 100,
         "priority": 1,
+        "rate_multiplier": 1,
         "auto_pause_on_expired": True,
     }
 
@@ -540,6 +541,10 @@ def _build_sub2api_agent_identity_payload(cred: dict, group_ids: list[int]) -> t
         "content": json.dumps(auth_json, ensure_ascii=False),
         "name": email or "codex-agent",
         "update_existing": True,
+        "concurrency": 100,
+        "priority": 1,
+        "rate_multiplier": 1,
+        "auto_pause_on_expired": True,
     }
     if group_ids:
         payload["group_ids"] = list(group_ids)
