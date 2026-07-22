@@ -606,6 +606,8 @@ class AutoLoopStartReq(BaseModel):
     proxy_pool: str = ""         # 多代理池（每行一个）；优先于 proxy
     proxy_subscription_url: str = ""
     proxy_subscription_refresh_seconds: int = 0
+    proxy_subscription_limit: int = 0  # 0=取全部；>0=只取订阅前 N 个直连代理
+    max_runs: int = 0                 # 0=不限；>0=本次最多启动 N 个注册 run
     concurrency: int = 1         # 并发 worker 数（1-20）
     otp_timeout: int = 180
     allow_existing_login: bool = True

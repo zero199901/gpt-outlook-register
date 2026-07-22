@@ -710,6 +710,8 @@ function _autoOptions() {
     proxy_pool: $("#autoProxyPool").value,
     proxy_subscription_url: $("#autoProxySubscriptionUrl")?.value.trim() || "",
     proxy_subscription_refresh_seconds: parseInt($("#autoProxySubRefresh")?.value || "0", 10) || 0,
+    proxy_subscription_limit: parseInt($("#autoProxySubLimit")?.value || "0", 10) || 0,
+    max_runs: parseInt($("#autoMaxRuns")?.value || "0", 10) || 0,
     concurrency: parseInt($("#autoConcurrency").value || "1", 10),
     otp_timeout: parseInt($("#regOtpTimeout").value || "180", 10),
     want_access_token: true,
@@ -751,13 +753,16 @@ async function loadProxySubscriptionPreview() {
       body: JSON.stringify({ url, timeout: 20 }),
     });
     const proxies = Array.isArray(r.proxies) ? r.proxies : [];
-    if (proxies.length) {
-      $("#autoProxyPool").value = proxies.join("\n");
+    const limit = parseInt($("#autoProxySubLimit")?.value || "0", 10) || 0;
+    const selected = limit > 0 ? proxies.slice(0, limit) : proxies;
+    if (selected.length) {
+      $("#autoProxyPool").value = selected.join("\n");
       _saveForm();
     }
     const warn = (r.warnings || []).length ? `；${(r.warnings || []).join("；")}` : "";
-    out.textContent = `订阅 ${r.count || 0} 个 HTTP/SOCKS 代理，跳过 ${r.unsupported_count || 0} 个其它节点${warn}`;
-    out.className = proxies.length ? "result ok" : "result warn";
+    const selectedText = limit > 0 ? `，已取 ${selected.length} 个` : "";
+    out.textContent = `订阅 ${r.count || 0} 个 HTTP/SOCKS 代理${selectedText}，跳过 ${r.unsupported_count || 0} 个其它节点${warn}`;
+    out.className = selected.length ? "result ok" : "result warn";
   } catch (e) {
     out.textContent = "订阅拉取失败: " + e.message;
     out.className = "result bad";
@@ -783,8 +788,10 @@ function _renderAutoStatus(s) {
       }).join("")
     : "";
   const metaParts = [`并发=${s.concurrency || 1}`];
+  if (s.max_runs) metaParts.push(`本次=${s.runs_started || 0}/${s.max_runs}`);
   if (s.proxy_pool_size) metaParts.push(`代理池=${s.proxy_pool_size}`);
   if (s.proxy_subscription_count) metaParts.push(`订阅=${s.proxy_subscription_count}`);
+  if (s.proxy_subscription_limit) metaParts.push(`取=${s.proxy_subscription_limit}`);
   if (s.proxy_subscription_refresh_seconds) metaParts.push(`订阅刷新=${s.proxy_subscription_refresh_seconds}s`);
   const meta = metaParts.join(" ");
   const subStatus = s.proxy_subscription_status ? `<br><span class="auto-msg">${escapeHtml(s.proxy_subscription_status)}</span>` : "";
@@ -862,8 +869,10 @@ const PERSIST_FIELDS = {
   regOtpTimeout:   "text",
   autoCoolDown:    "text",
   autoConcurrency: "text",
+  autoMaxRuns:     "text",
   autoProxyPool:   "text",
   autoProxySubscriptionUrl: "text",
+  autoProxySubLimit: "text",
   autoProxySubRefresh: "text",
 };
 

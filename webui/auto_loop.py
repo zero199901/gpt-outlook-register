@@ -81,7 +81,10 @@ class AutoLoopController:
         self._last_proxy_subscription_fetch: float = 0.0
         self._proxy_subscription_status: str = ""
         self._proxy_subscription_source: str = ""
+        self._proxy_subscription_limit: int = 0
         self._proxy_subscription_fetch_lock = threading.Lock()
+        self._max_runs: int = 0
+        self._runs_started: int = 0
 
     # ──────────────────────── 公共 API ────────────────────────
 
@@ -97,6 +100,7 @@ class AutoLoopController:
             self._started_at = time.time()
             self._registered_ok = 0
             self._registered_fail = 0
+            self._runs_started = 0
             self._worker_status.clear()
             self._consecutive_network_fails = 0
             self._last_message = "auto-loop 启动"
@@ -108,6 +112,8 @@ class AutoLoopController:
             self._proxy_pool = list(self._proxy_pool_manual)
             self._proxy_subscription_url = (self._options.get("proxy_subscription_url") or "").strip()
             self._proxy_subscription_refresh_seconds = max(0, int(self._options.get("proxy_subscription_refresh_seconds") or 0))
+            self._proxy_subscription_limit = max(0, int(self._options.get("proxy_subscription_limit") or 0))
+            self._max_runs = max(0, int(self._options.get("max_runs") or 0))
             self._last_proxy_subscription_fetch = 0.0
             self._proxy_subscription_source = mask_url(self._proxy_subscription_url)
             self._proxy_subscription_status = ""
@@ -129,6 +135,8 @@ class AutoLoopController:
             "concurrency": self._concurrency,
             "proxy_pool_size": len(self._proxy_pool),
             "proxy_subscription_count": len(self._proxy_pool_subscription),
+            "proxy_subscription_limit": self._proxy_subscription_limit,
+            "max_runs": self._max_runs,
         }
 
     def pause(self) -> dict:
@@ -200,12 +208,15 @@ class AutoLoopController:
                 "elapsed": (time.time() - self._started_at) if self._started_at else 0,
                 "registered_ok": self._registered_ok,
                 "registered_fail": self._registered_fail,
+                "runs_started": self._runs_started,
+                "max_runs": self._max_runs,
                 "concurrency": self._concurrency,
                 "proxy_pool_size": len(self._proxy_pool),
                 "proxy_pool_manual_size": len(self._proxy_pool_manual),
                 "proxy_subscription_count": len(self._proxy_pool_subscription),
                 "proxy_subscription_url": self._proxy_subscription_source,
                 "proxy_subscription_refresh_seconds": self._proxy_subscription_refresh_seconds,
+                "proxy_subscription_limit": self._proxy_subscription_limit,
                 "proxy_subscription_last_fetch": self._last_proxy_subscription_fetch,
                 "proxy_subscription_status": self._proxy_subscription_status,
                 "workers": workers_info,
@@ -257,15 +268,18 @@ class AutoLoopController:
             msg_tail = ""
             if result.warnings:
                 msg_tail = "；" + "；".join(result.warnings[:2])
+            limit = max(0, int(self._proxy_subscription_limit or 0))
+            selected_proxies = result.proxies[:limit] if limit > 0 else result.proxies
+            limit_tail = f"，取前 {limit} 个" if limit > 0 and result.proxies else ""
             with self._lock:
                 self._last_proxy_subscription_fetch = time.time()
-                if result.proxies:
-                    self._proxy_pool_subscription = result.proxies
+                if selected_proxies:
+                    self._proxy_pool_subscription = selected_proxies
                     self._proxy_pool = dedupe_preserve_order(
                         self._proxy_pool_subscription + self._proxy_pool_manual
                     )
                     self._proxy_subscription_status = (
-                        f"订阅代理 {len(result.proxies)} 个，总代理池 {len(self._proxy_pool)} 个{msg_tail}"
+                        f"订阅代理 {len(result.proxies)} 个{limit_tail}，总代理池 {len(self._proxy_pool)} 个{msg_tail}"
                     )
                 else:
                     extra = result.error or "订阅内暂无 HTTP/SOCKS 直连代理"
@@ -355,6 +369,15 @@ class AutoLoopController:
                 )
             self._broadcast("state", self._snapshot())
 
+    def _reserve_run_slot(self, worker_id: int) -> bool:
+        """限制本次自动跑号最多启动多少个 run；0 表示不限。"""
+        with self._lock:
+            if self._max_runs > 0 and self._runs_started >= self._max_runs:
+                self._last_message = f"已达到本次最多 {self._max_runs} 个 run，worker-{worker_id} 停止"
+                return False
+            self._runs_started += 1
+            return True
+
     def _worker_loop(self, worker_id: int):
         """单 worker 循环：claim → 跑 → 等结束 → 继续。"""
         idle_round = 0
@@ -373,6 +396,11 @@ class AutoLoopController:
                 if self._stop_event.is_set():
                     return
 
+            # 本次最多启动 N 个 run；到数后停止整个 auto-loop。
+            if not self._reserve_run_slot(worker_id):
+                self._broadcast("state", self._snapshot())
+                return
+
             # claim 下一个号（CF 模式用虚拟占位，无需 outlook 号池）
             mail_source = db.get_setting("mail_source", "outlook")
             if mail_source == "cf_temp":
@@ -383,6 +411,8 @@ class AutoLoopController:
             else:
                 account = db.claim_next()
             if not account:
+                with self._lock:
+                    self._runs_started = max(0, self._runs_started - 1)
                 idle_round += 1
                 if idle_round == 1:
                     self._set_message(
@@ -411,6 +441,8 @@ class AutoLoopController:
             try:
                 run_id = registrar.start_registration(account, run_options)
             except Exception as e:
+                with self._lock:
+                    self._runs_started = max(0, self._runs_started - 1)
                 logger.exception(f"[worker-{worker_id}] 启动注册失败: {e}")
                 if mail_source != "cf_temp":
                     db.release_unused(account["email"])
